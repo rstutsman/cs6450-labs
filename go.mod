@@ -1,3 +1,5 @@
 module github.com/rstutsman/cs6450-labs
 
-go 1.21
+go 1.25
+
+replace github.com/rstutsman/cs6450-labs/kvs => ./

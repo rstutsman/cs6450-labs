@@ -13,16 +13,30 @@ import (
 	"github.com/rstutsman/cs6450-labs/kvs"
 )
 
-type KVService struct {
-	sync.Mutex
-	mp   map[string]string
+type Stats struct {
 	puts uint64
 	gets uint64
+}
+
+func (s *Stats) Sub(prev *Stats) Stats {
+	r := Stats{}
+	r.puts = s.puts - prev.puts
+	r.gets = s.gets - prev.gets
+	return r
+}
+
+type KVService struct {
+	sync.Mutex
+	mp        map[string]string
+	stats     Stats
+	prevStats Stats
+	lastPrint time.Time
 }
 
 func NewKVService() *KVService {
 	kvs := &KVService{}
 	kvs.mp = make(map[string]string)
+	kvs.lastPrint = time.Now()
 	return kvs
 }
 
@@ -30,7 +44,7 @@ func (kv *KVService) Get(request *kvs.GetRequest, response *kvs.GetResponse) err
 	kv.Lock()
 	defer kv.Unlock()
 
-	kv.gets++
+	kv.stats.gets++
 
 	if value, found := kv.mp[request.Key]; found {
 		response.Value = value
@@ -43,7 +57,7 @@ func (kv *KVService) Put(request *kvs.PutRequest, response *kvs.PutResponse) err
 	kv.Lock()
 	defer kv.Unlock()
 
-	kv.puts++
+	kv.stats.puts++
 
 	kv.mp[request.Key] = request.Value
 
@@ -52,12 +66,21 @@ func (kv *KVService) Put(request *kvs.PutRequest, response *kvs.PutResponse) err
 
 func (kv *KVService) printStats() {
 	kv.Lock()
-	gets := kv.gets
-	puts := kv.puts
-	sz := len(kv.mp)
+	stats := kv.stats
+	prevStats := kv.prevStats
+	kv.prevStats = stats
+	now := time.Now()
+	lastPrint := kv.lastPrint
+	kv.lastPrint = now
 	kv.Unlock()
 
-	fmt.Printf("gets %v\nputs %v\nsize %v\n\n", puts, gets, sz)
+	diff := stats.Sub(&prevStats)
+	deltaS := now.Sub(lastPrint).Seconds()
+
+	fmt.Printf("get/s %0.2f\nput/s %0.2f\nops/s %0.2f\n\n",
+		float64(diff.gets)/deltaS,
+		float64(diff.puts)/deltaS,
+		float64(diff.gets+diff.puts)/deltaS)
 }
 
 func main() {
