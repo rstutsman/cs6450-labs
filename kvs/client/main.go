@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/rpc"
 	"sync/atomic"
@@ -12,24 +13,39 @@ import (
 )
 
 type Client struct {
-	rpcClient *rpc.Client
+	rpcClients []*rpc.Client
 }
 
-func Dial(addr string) *Client {
-	rpcClient, err := rpc.DialHTTP("tcp", addr)
-	if err != nil {
-		log.Fatal(err)
+func Dial(addrs []string) *Client {
+	rpcClients := make([]*rpc.Client, 0)
+	for _, addr := range addrs {
+		fmt.Printf("Connecting to %v\n", addr)
+		rpcClient, err := rpc.DialHTTP("tcp", addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		rpcClients = append(rpcClients, rpcClient)
 	}
 
-	return &Client{rpcClient}
+	return &Client{rpcClients}
+}
+
+func HashFNV(s string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return h.Sum32()
 }
 
 func (client *Client) Get(key string) string {
 	request := kvs.GetRequest{
 		Key: key,
 	}
+
+	i := HashFNV(key) % uint32(len(client.rpcClients))
+	cl := client.rpcClients[i]
+
 	response := kvs.GetResponse{}
-	err := client.rpcClient.Call("KVService.Get", &request, &response)
+	err := cl.Call("KVService.Get", &request, &response)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,15 +58,19 @@ func (client *Client) Put(key string, value string) {
 		Key:   key,
 		Value: value,
 	}
+
+	i := HashFNV(key) % uint32(len(client.rpcClients))
+	cl := client.rpcClients[i]
+
 	response := kvs.PutResponse{}
-	err := client.rpcClient.Call("KVService.Put", &request, &response)
+	err := cl.Call("KVService.Put", &request, &response)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
-	client := Dial(addr)
+func runClient(id int, addrs []string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
+	client := Dial(addrs)
 
 	// XXXXXXXXXXXXXX make correct len value
 	const batchSize = 1024
@@ -77,22 +97,31 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 }
 
 func main() {
-	host := flag.String("host", "localhost", "Host to connect to")
-	port := flag.String("port", "8080", "Port to connect to")
+	//host := flag.String("host", "localhost", "Host to connect to")
+	//port := flag.String("port", "8080", "Port to connect to")
 	clients := flag.Int("clients", 3, "Number of concurrent clients")
 	theta := flag.Float64("theta", 0.99, "Zipfian distribution skew parameter")
 	workload := flag.String("workload", "YCSB-A", "Workload type (YCSB-A, YCSB-B, YCSB-C)")
 	secs := flag.Int("secs", 10, "Duration in seconds for each client to run")
 	flag.Parse()
 
-	addr := fmt.Sprintf("%v:%v", *host, *port)
+	//addrs := make([]string, 0)
+	//addrs = append(addrs, "10.10.1.3:8080")
+	//addrs = append(addrs, "10.10.1.4:8080")
+	addrs := []string{
+	"10.10.1.2:8080",
+	"10.10.1.3:8080",
+	"10.10.1.4:8080"}
+	//addrs = append(addrs, fmt.Sprintf("%v:%v", *host, p))
+	//addrs = append(addrs, fmt.Sprintf("%v:%v", *host, p + 1))
 	fmt.Printf(
+		"server %v\n"+
 		"server %v\n"+
 			"clients %d\n"+
 			"theta %.2f\n"+
 			"workload %s\n"+
 			"secs %d\n",
-		addr, *clients, *theta, *workload, *secs,
+		addrs[0], addrs[1], *clients, *theta, *workload, *secs,
 	)
 
 	start := time.Now()
@@ -103,7 +132,7 @@ func main() {
 	for i := 0; i < *clients; i++ {
 		go func(i int) {
 			workload := kvs.NewWorkload(*workload, *theta)
-			runClient(i, addr, &done, workload, resultsCh)
+			runClient(i, addrs, &done, workload, resultsCh)
 		}(i)
 	}
 
