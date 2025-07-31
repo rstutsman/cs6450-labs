@@ -1,0 +1,19 @@
+package kvs
+
+type PutRequest struct {
+	Key   string
+	Value string
+}
+
+type PutResponse struct {
+}
+
+type GetRequest struct {
+	Key   string
+	Value string
+}
+
+type GetResponse struct {
+	Key   string
+	Value string
+}
