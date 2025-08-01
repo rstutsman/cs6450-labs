@@ -5,23 +5,32 @@ import (
 	"fmt"
 	"log"
 	"net/rpc"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rstutsman/cs6450-labs/kvs"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 type Client struct {
+	sync.Mutex
 	rpcClient *rpc.Client
 }
 
 func Dial(addr string) *Client {
-	rpcClient, err := rpc.DialHTTP("tcp", addr)
+	rpcClient, err := rpc.Dial("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	return &Client{rpcClient}
+	return &Client{sync.Mutex{}, rpcClient}
+}
+
+func Create(rpcClient *rpc.Client) *Client {
+	return &Client{rpcClient: rpcClient}
 }
 
 func (client *Client) Get(key string) string {
@@ -49,8 +58,8 @@ func (client *Client) Put(key string, value string) {
 	}
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
-	client := Dial(addr)
+func runClient(id int, rpcClient *rpc.Client, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
+	client := Create(rpcClient)
 
 	// XXXXXXXXXXXXXX make correct len value
 	const batchSize = 1024
@@ -95,16 +104,32 @@ func main() {
 		addr, *clients, *theta, *workload, *secs,
 	)
 
+	go func() {
+		log.Println(http.ListenAndServe(":6060", nil))
+	}()
+
 	start := time.Now()
 
 	done := atomic.Bool{}
 	resultsCh := make(chan uint64, *clients)
 
+	rpcClient, err := rpc.Dial("tcp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	for i := 0; i < *clients; i++ {
 		go func(i int) {
 			workload := kvs.NewWorkload(*workload, *theta)
-			runClient(i, addr, &done, workload, resultsCh)
+			runClient(i, rpcClient, &done, workload, resultsCh)
 		}(i)
+
+		if ((i + 1) & 128 == 0) {
+			rpcClient, err = rpc.Dial("tcp", addr)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
 	}
 
 	time.Sleep(time.Duration(*secs) * time.Second)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
+	//"net/http"
 	"net/rpc"
 	"sync"
 	"time"
@@ -46,9 +46,11 @@ func (kv *KVService) Get(request *kvs.GetRequest, response *kvs.GetResponse) err
 
 	kv.stats.gets++
 
+/*
 	if value, found := kv.mp[request.Key]; found {
 		response.Value = value
 	}
+	*/
 
 	return nil
 }
@@ -59,8 +61,9 @@ func (kv *KVService) Put(request *kvs.PutRequest, response *kvs.PutResponse) err
 
 	kv.stats.puts++
 
+/*
 	kv.mp[request.Key] = request.Value
-
+*/
 	return nil
 }
 
@@ -89,7 +92,7 @@ func main() {
 
 	kvs := NewKVService()
 	rpc.Register(kvs)
-	rpc.HandleHTTP()
+	//rpc.HandleHTTP()
 
 	l, e := net.Listen("tcp", fmt.Sprintf(":%v", *port))
 	if e != nil {
@@ -105,5 +108,14 @@ func main() {
 		}
 	}()
 
-	http.Serve(l, nil)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			continue
+		}
+		go rpc.ServeConn(conn) // handles one connection
+	}
+
+
+	//http.Serve(l, nil)
 }
