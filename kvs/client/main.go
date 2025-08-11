@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/rpc"
 	"strings"
@@ -50,8 +51,28 @@ func (client *Client) Put(key string, value string) {
 	}
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
-	client := Dial(addr)
+type HostList []string
+
+func (h *HostList) Set(value string) error {
+	*h = append(*h, value)
+	return nil
+}
+
+func (h *HostList) String() string {
+	return fmt.Sprintf("%v", *h)
+}
+
+func hash(s string) int {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return int(h.Sum32())
+}
+
+func runClient(id int, hosts HostList, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
+	clients := make([]*Client, len(hosts))
+	for i, host := range hosts {
+		clients[i] = Dial(host)
+	}
 
 	value := strings.Repeat("x", 128)
 	const batchSize = 1024
@@ -62,10 +83,11 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 		for j := 0; j < batchSize; j++ {
 			op := workload.Next()
 			key := fmt.Sprintf("%d", op.Key)
+			h := hash(key) % len(clients)
 			if op.IsRead {
-				client.Get(key)
+				clients[h].Get(key)
 			} else {
-				client.Put(key, value)
+				clients[h].Put(key, value)
 			}
 			opsCompleted++
 		}
@@ -77,14 +99,19 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 }
 
 func main() {
-	host := flag.String("host", "localhost", "Host to connect to")
+	hosts := HostList{}
+	flag.Var(&hosts, "host", "Host to connect to")
 	port := flag.String("port", "8080", "Port to connect to")
 	theta := flag.Float64("theta", 0.99, "Zipfian distribution skew parameter")
 	workload := flag.String("workload", "YCSB-A", "Workload type (YCSB-A, YCSB-B, YCSB-C)")
 	secs := flag.Int("secs", 30, "Duration in seconds for each client to run")
 	flag.Parse()
 
-	addr := fmt.Sprintf("%v:%v", *host, *port)
+	if len(hosts) == 0 {
+		hosts = append(hosts, "localhost:8080")
+	}
+
+	addr := fmt.Sprintf("%v:%v", hosts.String(), *port)
 	fmt.Printf(
 		"server %v\n"+
 			"theta %.2f\n"+
@@ -98,11 +125,12 @@ func main() {
 	done := atomic.Bool{}
 	resultsCh := make(chan uint64)
 
-	clientId := 0
-	go func(clientId int) {
-		workload := kvs.NewWorkload(*workload, *theta)
-		runClient(clientId, addr, &done, workload, resultsCh)
-	}(clientId)
+	for clientId := 0; clientId < 8; clientId++ {
+		go func(clientId int) {
+			workload := kvs.NewWorkload(*workload, *theta)
+			runClient(clientId, hosts, &done, workload, resultsCh)
+		}(clientId)
+	}
 
 	time.Sleep(time.Duration(*secs) * time.Second)
 	done.Store(true)
