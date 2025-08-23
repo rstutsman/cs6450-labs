@@ -46,27 +46,37 @@ func NewKVService() *KVService {
 	return kvs
 }
 
-func (kv *KVService) Get(request *kvs.GetRequest, response *kvs.GetResponse) error {
+// Instead of looking up a key, look up the batch of keys
+// and return an array of corresponding values
+func (kv *KVService) BatchGet(request *kvs.BatchGetRequest, response *kvs.BatchGetResponse) error {
 	kv.Lock()
 	defer kv.Unlock()
 
-	kv.stats.gets++
+	kv.stats.gets += uint64(len(request.Keys))
 
-	if value, found := kv.mp[request.Key]; found {
-		response.Value = value
+	// Ensure that the response array is initialized
+	response.Values = make([]string, len(request.Keys))
+
+	for i, key := range request.Keys {
+		if value, found := kv.mp[key]; found {
+			response.Values[i] = value
+		}
 	}
 
 	return nil
 }
 
-func (kv *KVService) Put(request *kvs.PutRequest, response *kvs.PutResponse) error {
+// Instead of placing a single value,
+// place a batch
+func (kv *KVService) BatchPut(request *kvs.BatchPutRequest, response *kvs.BatchPutResponse) error {
 	kv.Lock()
 	defer kv.Unlock()
 
-	kv.stats.puts++
+	kv.stats.puts += uint64(len(request.Data))
 
-	kv.mp[request.Key] = request.Value
-
+	for key, value := range request.Data {
+		kv.mp[key] = value
+	}
 	return nil
 }
 
