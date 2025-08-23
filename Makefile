@@ -96,3 +96,6 @@ check: fmt vet test ## Run format, vet, and test
 
 rebuild: clean build ## Clean and rebuild everything
 
+run-server-prof: build-server ## Run KVS server with CPU profiling
+	@echo "Starting KVS server with CPU profiling..."
+	./$(SERVER_BINARY) -cpuprofile=$(CPUPROFILE)
