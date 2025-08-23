@@ -31,34 +31,82 @@ func (s *Stats) Sub(prev *Stats) Stats {
 	return r
 }
 
+// sharding ---------------------------------
+type KeyValue struct {
+	Value		string
+	Expiration	time.Time	// simulates TTL
+}
+type Shard struct {
+	data map[string]KeyValue
+	mu sync.RWMutex
+}
+
 type KVService struct {
 	sync.Mutex
-	mp        map[string]string
+	shards	  []*Shard
+	replicas  int
 	stats     Stats
 	prevStats Stats
 	lastPrint time.Time
 }
 
-func NewKVService() *KVService {
+func NewKVService(numShards, numReplicas int) *KVService {
 	kvs := &KVService{}
-	kvs.mp = make(map[string]string)
+	kvs.shards = make([]*Shard, numShards)
+	kvs.replicas = numReplicas
+
+	for i:=0; i<numShards; i++ {
+		kvs.shards[i] = &Shard{data: make(map[string]KeyValue)}
+	}
+
 	kvs.lastPrint = time.Now()
 	return kvs
+}
+
+func fnvHash(data string) uint32 {
+	 const prime = 16777619
+	 hash := uint32(2166136261)
+
+	 for i := 0; i < len(data); i++ {
+	  hash ^= uint32(data[i])
+	  hash *= prime
+	 }
+
+	 return hash
+}
+
+func (kv *KVService) GetShardIndex(key string) int {
+	hash := fnvHash(key)
+	return int(hash) % len(kv.shards)
+}
+
+// single getter method
+// not I/O bound, just a helper per request
+func (kv *KVService) Get(key string) (string, bool) {
+	shardIndex := kv.GetShardIndex(key)
+	shard := kv.shards[shardIndex]
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	item, ok := shard.data[key]
+	if !ok || time.Now().After(item.Expiration) {
+		return "", false
+	}
+
+	return item.Value, true
 }
 
 // Instead of looking up a key, look up the batch of keys
 // and return an array of corresponding values
 func (kv *KVService) BatchGet(request *kvs.BatchGetRequest, response *kvs.BatchGetResponse) error {
-	kv.Lock()
-	defer kv.Unlock()
-
+	// XXX: potential case where several entries in a batch share the same shard
 	kv.stats.gets += uint64(len(request.Keys))
 
 	// Ensure that the response array is initialized
 	response.Values = make([]string, len(request.Keys))
 
 	for i, key := range request.Keys {
-		if value, found := kv.mp[key]; found {
+		if value, found := kv.Get(key); found {
 			response.Values[i] = value
 		}
 	}
@@ -66,16 +114,25 @@ func (kv *KVService) BatchGet(request *kvs.BatchGetRequest, response *kvs.BatchG
 	return nil
 }
 
+// single putter method
+// not I/O bound, just a helper per request
+func (kv *KVService) Put(key, value string, ttl time.Duration) {
+	shardIndex := kv.GetShardIndex(key)
+	shard := kv.shards[shardIndex]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	expiration := time.Now().Add(ttl)
+	shard.data[key] = KeyValue{Value: value, Expiration: expiration}
+}
+
 // Instead of placing a single value,
 // place a batch
 func (kv *KVService) BatchPut(request *kvs.BatchPutRequest, response *kvs.BatchPutResponse) error {
-	kv.Lock()
-	defer kv.Unlock()
-
 	kv.stats.puts += uint64(len(request.Data))
 
 	for key, value := range request.Data {
-		kv.mp[key] = value
+		kv.Put(key, value, time.Duration(100 * float64(time.Millisecond)))
 	}
 	return nil
 }
@@ -100,8 +157,11 @@ func (kv *KVService) printStats() {
 }
 
 func main() {
-	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile in specified directory")
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile in specified directory")
 	port := flag.String("port", "8080", "Port to run the server on")
+	numShards := flag.Int("numshards", 10, "number of shards to use")
+	numReplicas := flag.Int("numreplicas", 10, "number of replicas")
+
 	flag.Parse()
 
 	// cpuprofile flag set to log profiling data
@@ -127,7 +187,7 @@ func main() {
 		}()
 	}
 
-	kvs := NewKVService()
+	kvs := NewKVService(*numShards, *numReplicas)
 	rpc.Register(kvs)
 	rpc.HandleHTTP()
 
