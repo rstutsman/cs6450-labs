@@ -10,6 +10,12 @@ import (
 	"sync"
 	"time"
 
+	// for profiling
+	"runtime/pprof"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/rstutsman/cs6450-labs/kvs"
 )
 
@@ -84,8 +90,32 @@ func (kv *KVService) printStats() {
 }
 
 func main() {
+	var cpuprofile = flag.String("cpuprofile", "", "write cpu profile in specified directory")
 	port := flag.String("port", "8080", "Port to run the server on")
 	flag.Parse()
+
+	// cpuprofile flag set to log profiling data
+	// ONLY when flag is set.
+	if *cpuprofile != "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			log.Fatal(err)
+		}
+		f, err := os.Create(fmt.Sprintf("%s/%s", *cpuprofile, hostname))
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+
+		sigc := make(chan os.Signal, 1)
+		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+		go func() {
+			<-sigc
+			pprof.StopCPUProfile()
+			os.Exit(0)
+		}()
+	}
 
 	kvs := NewKVService()
 	rpc.Register(kvs)
