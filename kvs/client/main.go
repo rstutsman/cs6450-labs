@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/rpc"
 	"strings"
@@ -50,9 +51,14 @@ func (client *Client) Put(key string, value string) {
 	}
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
-	client := Dial(addr)
+func serverFromKey(key *string, servers *[]*Client) Client {
+	h := fnv.New32a()
+	h.Write([]byte(*key))
+	idx := int(h.Sum32()) % len(*servers)
+	return *(*servers)[idx]
+}
 
+func runClient(id int, servers []*Client, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
 	value := strings.Repeat("x", 128)
 	const batchSize = 1024
 
@@ -62,10 +68,11 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 		for j := 0; j < batchSize; j++ {
 			op := workload.Next()
 			key := fmt.Sprintf("%d", op.Key)
+			server := serverFromKey(&key, &servers)
 			if op.IsRead {
-				client.Get(key)
+				server.Get(key)
 			} else {
-				client.Put(key, value)
+				server.Put(key, value)
 			}
 			opsCompleted++
 		}
@@ -85,6 +92,14 @@ func (h *HostList) String() string {
 func (h *HostList) Set(value string) error {
 	*h = strings.Split(value, ",")
 	return nil
+}
+
+func dialHosts(servers HostList) []*Client {
+	var clients []*Client
+	for _, addr := range servers {
+		clients = append(clients, Dial(addr))
+	}
+	return clients
 }
 
 func main() {
@@ -113,12 +128,22 @@ func main() {
 	done := atomic.Bool{}
 	resultsCh := make(chan uint64)
 
-	host := hosts[0]
-	clientId := 0
-	go func(clientId int) {
-		workload := kvs.NewWorkload(*workload, *theta)
-		runClient(clientId, host, &done, workload, resultsCh)
-	}(clientId)
+	//host := hosts[0]
+	//clientId := 0
+	//go func(clientId int) {
+	//	workload := kvs.NewWorkload(*workload, *theta)
+	//	runClient(clientId, host, &done, workload, resultsCh)
+	//}(clientId)
+
+	numClients := 128
+	for i := 0; i < numClients; i++ {
+		go func(clientId int) {
+			connections := dialHosts(hosts)
+
+			workload := kvs.NewWorkload(*workload, *theta)
+			runClient(clientId, connections, &done, workload, resultsCh)
+		}(i)
+	}
 
 	time.Sleep(time.Duration(*secs) * time.Second)
 	done.Store(true)
