@@ -51,6 +51,19 @@ func (client *Client) BatchPut(putData map[string]string) {
 	}
 }
 
+func (client *Client) SendBatch(putData map[string]string) []string {
+	request := kvs.Batch_Request{
+		Data: putData,
+	}
+	response := kvs.Batch_Response{}
+	err := client.rpcClient.Call("KVService.Process_Batch", &request, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return response.Values
+}
+
 func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
 	client := Dial(addr)
 
@@ -61,28 +74,24 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 
 	for !done.Load() {
 		// Create two batches of operations for reads and writes
-		var getKeys []string
-		putData := make(map[string]string)
+		batchData := make(map[string]string)
 
 		for j := 0; j < batchSize; j++ {
 			op := workload.Next()
 			key := fmt.Sprintf("%d", op.Key)
 			if op.IsRead {
 				//client.Get(key)
-				getKeys = append(getKeys, key)
+				batchData[key] = ""
 			} else {
 				//client.Put(key, value)
-				putData[key] = value
+				batchData[key] = value
 			}
 			opsCompleted++
 		}
 
 		// Send only 2 RPC calls.
-		if len(getKeys) > 0 {
-			client.BatchGet(getKeys)
-		}
-		if len(putData) > 0 {
-			client.BatchPut(putData)
+		if len(batchData) > 0 {
+			client.SendBatch(batchData)
 		}
 	}
 

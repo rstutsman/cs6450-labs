@@ -137,6 +137,28 @@ func (kv *KVService) BatchPut(request *kvs.BatchPutRequest, response *kvs.BatchP
 	return nil
 }
 
+func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Batch_Response) error {
+	kv.stats.puts += uint64(len(request.Data))
+
+	response.Values = make([]string, len(request.Data))
+
+	var i = 0
+	for key, value := range request.Data {
+		if value == "" {
+
+			if value, found := kv.Get(key); found {
+				response.Values[i] = value
+			}
+
+		} else {
+			kv.Put(key, value, time.Duration(100 * float64(time.Millisecond)))
+		}
+		i++
+	}
+
+	return nil
+}
+
 func (kv *KVService) printStats() {
 	kv.Lock()
 	stats := kv.stats
