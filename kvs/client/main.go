@@ -25,32 +25,6 @@ func Dial(addr string) *Client {
 	return &Client{rpcClient}
 }
 
-// Send a batch of keys to retrieve
-func (client *Client) BatchGet(keys []string) []string {
-	request := kvs.BatchGetRequest{
-		Keys: keys,
-	}
-	response := kvs.BatchGetResponse{}
-	err := client.rpcClient.Call("KVService.BatchGet", &request, &response)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return response.Values
-}
-
-// Send a batch of key-value pairs to modify
-func (client *Client) BatchPut(putData map[string]string) {
-	request := kvs.BatchPutRequest{
-		Data: putData,
-	}
-	//response := kvs.BatchPutResponse{}
-	err := client.rpcClient.Call("KVService.BatchPut", &request, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
 func (client *Client) SendBatch(putData map[string]string) []string {
 	request := kvs.Batch_Request{
 		Data: putData,

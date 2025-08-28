@@ -96,24 +96,6 @@ func (kv *KVService) Get(key string) (string, bool) {
 	return item.Value, true
 }
 
-// Instead of looking up a key, look up the batch of keys
-// and return an array of corresponding values
-func (kv *KVService) BatchGet(request *kvs.BatchGetRequest, response *kvs.BatchGetResponse) error {
-	// XXX: potential case where several entries in a batch share the same shard
-	kv.stats.gets += uint64(len(request.Keys))
-
-	// Ensure that the response array is initialized
-	response.Values = make([]string, len(request.Keys))
-
-	for i, key := range request.Keys {
-		if value, found := kv.Get(key); found {
-			response.Values[i] = value
-		}
-	}
-
-	return nil
-}
-
 // single putter method
 // not I/O bound, just a helper per request
 func (kv *KVService) Put(key, value string, ttl time.Duration) {
@@ -126,17 +108,8 @@ func (kv *KVService) Put(key, value string, ttl time.Duration) {
 	shard.data[key] = KeyValue{Value: value, Expiration: expiration}
 }
 
-// Instead of placing a single value,
-// place a batch
-func (kv *KVService) BatchPut(request *kvs.BatchPutRequest, response *kvs.BatchPutResponse) error {
-	kv.stats.puts += uint64(len(request.Data))
 
-	for key, value := range request.Data {
-		kv.Put(key, value, time.Duration(100 * float64(time.Millisecond)))
-	}
-	return nil
-}
-
+// Accets a batch of requests for Put/Get operations. Returns responses for both operations
 func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Batch_Response) error {
 	kv.stats.puts += uint64(len(request.Data))
 
