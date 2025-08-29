@@ -75,7 +75,7 @@ func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload
 			}
 
 			value := strings.Repeat("x", 128)
-			const batchSize = 1024
+			const batchSize = 5000 //1024
 			opsCompleted := uint64(0)
 
 			for !done.Load() {
