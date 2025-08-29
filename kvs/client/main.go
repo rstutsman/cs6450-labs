@@ -3,9 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net/rpc"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,44 +53,74 @@ func (client *Client) BatchPut(putData map[string]string) {
 	}
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
-	client := Dial(addr)
+func hashKey(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32()
+}
 
-	value := strings.Repeat("x", 128)
-	const batchSize = 1024
+func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload, numConnections int, resultsCh chan<- uint64) {
+	var wg sync.WaitGroup
+	totalOpsCompleted := uint64(0)
 
-	opsCompleted := uint64(0)
+	for connId := 0; connId < numConnections; connId++ {
+		wg.Add(1)
+		go func(connectionId int) {
+			defer wg.Done()
 
-	for !done.Load() {
-		// Create two batches of operations for reads and writes
-		var getKeys []string
-		putData := make(map[string]string)
-
-		for j := 0; j < batchSize; j++ {
-			op := workload.Next()
-			key := fmt.Sprintf("%d", op.Key)
-			if op.IsRead {
-				//client.Get(key)
-				getKeys = append(getKeys, key)
-			} else {
-				//client.Put(key, value)
-				putData[key] = value
+			// Dial all hosts
+			clients := make([]*Client, len(hosts))
+			for i, host := range hosts {
+				clients[i] = Dial(host)
 			}
-			opsCompleted++
-		}
 
-		// Send only 2 RPC calls.
-		if len(getKeys) > 0 {
-			client.BatchGet(getKeys)
-		}
-		if len(putData) > 0 {
-			client.BatchPut(putData)
-		}
+			value := strings.Repeat("x", 128)
+			const batchSize = 1024
+			opsCompleted := uint64(0)
+
+			for !done.Load() {
+				// Create batches for each server
+				getKeys := make([][]string, len(hosts)) // nil slices are fine for append
+				putData := make([]map[string]string, len(hosts))
+
+				// Only initialize putData maps (getKeys slices don't need it)
+				for i := range putData {
+					putData[i] = make(map[string]string)
+				}
+
+				for j := 0; j < batchSize; j++ {
+					op := workload.Next()
+					key := fmt.Sprintf("%d", op.Key)
+
+					// Hash key to determine which server
+					serverIndex := int(hashKey(key)) % len(hosts)
+
+					if op.IsRead {
+						getKeys[serverIndex] = append(getKeys[serverIndex], key)
+					} else {
+						putData[serverIndex][key] = value
+					}
+					opsCompleted++
+				}
+
+				// Send batches to each server
+				for i := 0; i < len(hosts); i++ {
+					if len(getKeys[i]) > 0 {
+						clients[i].BatchGet(getKeys[i])
+					}
+					if len(putData[i]) > 0 {
+						clients[i].BatchPut(putData[i])
+					}
+				}
+			}
+
+			atomic.AddUint64(&totalOpsCompleted, opsCompleted)
+		}(connId)
 	}
 
+	wg.Wait()
 	fmt.Printf("Client %d finished operations.\n", id)
-
-	resultsCh <- opsCompleted
+	resultsCh <- totalOpsCompleted
 }
 
 type HostList []string
@@ -109,6 +141,7 @@ func main() {
 	theta := flag.Float64("theta", 0.99, "Zipfian distribution skew parameter")
 	workload := flag.String("workload", "YCSB-B", "Workload type (YCSB-A, YCSB-B, YCSB-C)")
 	secs := flag.Int("secs", 30, "Duration in seconds for each client to run")
+	numConnections := flag.Int("connections", 1, "Number of connections per client")
 	flag.Parse()
 
 	if len(hosts) == 0 {
@@ -119,8 +152,9 @@ func main() {
 		"hosts %v\n"+
 			"theta %.2f\n"+
 			"workload %s\n"+
-			"secs %d\n",
-		hosts, *theta, *workload, *secs,
+			"secs %d\n"+
+			"connections %d\n",
+		hosts, *theta, *workload, *secs, *numConnections,
 	)
 
 	start := time.Now()
@@ -128,11 +162,10 @@ func main() {
 	done := atomic.Bool{}
 	resultsCh := make(chan uint64)
 
-	host := hosts[0]
 	clientId := 0
 	go func(clientId int) {
 		workload := kvs.NewWorkload(*workload, *theta)
-		runClient(clientId, host, &done, workload, resultsCh)
+		runClient(clientId, hosts, &done, workload, *numConnections, resultsCh)
 	}(clientId)
 
 	time.Sleep(time.Duration(*secs) * time.Second)
