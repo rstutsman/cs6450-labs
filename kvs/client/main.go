@@ -25,12 +25,12 @@ func Dial(addr string) *Client {
 	return &Client{rpcClient}
 }
 
-func (client *Client) SendBatch(putData map[string]string) []string {
+func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
 	request := kvs.Batch_Request{
 		Data: putData,
 	}
 	response := kvs.Batch_Response{}
-	err := client.rpcClient.Call("KVService.Process_Batch", &request, nil)
+	err := client.rpcClient.Call("KVService.Process_Batch", &request, &response)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -38,7 +38,20 @@ func (client *Client) SendBatch(putData map[string]string) []string {
 	return response.Values
 }
 
-func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64) {
+func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call {
+	request := kvs.Batch_Request{
+		Data: putData,
+	}
+	response := kvs.Batch_Response{}
+	call := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
+	if call.Error != nil {
+		log.Fatal(call.Error)
+	}
+
+	return call
+}
+
+func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, resultsCh chan<- uint64, asynch bool) {
 	client := Dial(addr)
 
 	value := strings.Repeat("x", 128)
@@ -47,26 +60,42 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 	opsCompleted := uint64(0)
 
 	for !done.Load() {
-		// Create two batches of operations for reads and writes
-		batchData := make(map[string]string)
+		// Create a batch of operations, consisting of both Gets and Puts
+		batchData := make([]kvs.BatchOperation, 0, batchSize)
 
 		for j := 0; j < batchSize; j++ {
 			op := workload.Next()
 			key := fmt.Sprintf("%d", op.Key)
 			if op.IsRead {
 				//client.Get(key)
-				batchData[key] = ""
+				batchData = append(batchData, kvs.BatchOperation{Key: key, IsRead: true})
 			} else {
 				//client.Put(key, value)
-				batchData[key] = value
+				batchData = append(batchData, kvs.BatchOperation{Key: key, Value: value, IsRead: false})
 			}
 			opsCompleted++
 		}
 
-		// Send only 2 RPC calls.
-		if len(batchData) > 0 {
-			client.SendBatch(batchData)
+		if asynch {
+			var calls []*rpc.Call
+			if len(batchData) > 0 {
+				calls = append(calls, client.Send_Asynch_Batch(batchData))
+			}
+
+			// Wait for all asynchronous calls to complete.
+			// Similar to what we did in HW1.
+			// call.Done is a channel which signals when the call was finished
+			// Response data is stored in call.Reply (NEEDS SOME TESTING)
+			for _, call := range calls {
+				<-call.Done
+			}
+		} else {
+			// Send only 1 RPC call size of batchSize
+			if len(batchData) > 0 {
+				client.Send_Synch_Batch(batchData)
+			}
 		}
+
 	}
 
 	fmt.Printf("Client %d finished operations.\n", id)
@@ -92,6 +121,10 @@ func main() {
 	theta := flag.Float64("theta", 0.99, "Zipfian distribution skew parameter")
 	workload := flag.String("workload", "YCSB-B", "Workload type (YCSB-A, YCSB-B, YCSB-C)")
 	secs := flag.Int("secs", 30, "Duration in seconds for each client to run")
+
+	// Change this value to run asynchronously
+	asynch := flag.Bool("asynch", true, "Enable asynchronous RPC calls")
+
 	flag.Parse()
 
 	if len(hosts) == 0 {
@@ -102,8 +135,9 @@ func main() {
 		"hosts %v\n"+
 			"theta %.2f\n"+
 			"workload %s\n"+
+			"Asynch RPC %t\n"+
 			"secs %d\n",
-		hosts, *theta, *workload, *secs,
+		hosts, *theta, *workload, *asynch, *secs,
 	)
 
 	start := time.Now()
@@ -115,7 +149,7 @@ func main() {
 	clientId := 0
 	go func(clientId int) {
 		workload := kvs.NewWorkload(*workload, *theta)
-		runClient(clientId, host, &done, workload, resultsCh)
+		runClient(clientId, host, &done, workload, resultsCh, *asynch)
 	}(clientId)
 
 	time.Sleep(time.Duration(*secs) * time.Second)

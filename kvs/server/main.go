@@ -11,9 +11,9 @@ import (
 	"time"
 
 	// for profiling
-	"runtime/pprof"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"syscall"
 
 	"github.com/rstutsman/cs6450-labs/kvs"
@@ -33,17 +33,17 @@ func (s *Stats) Sub(prev *Stats) Stats {
 
 // sharding ---------------------------------
 type KeyValue struct {
-	Value		string
-	Expiration	time.Time	// simulates TTL
+	Value      string
+	Expiration time.Time // simulates TTL
 }
 type Shard struct {
 	data map[string]KeyValue
-	mu sync.RWMutex
+	mu   sync.RWMutex
 }
 
 type KVService struct {
 	sync.Mutex
-	shards	  []*Shard
+	shards    []*Shard
 	replicas  int
 	stats     Stats
 	prevStats Stats
@@ -55,7 +55,7 @@ func NewKVService(numShards, numReplicas int) *KVService {
 	kvs.shards = make([]*Shard, numShards)
 	kvs.replicas = numReplicas
 
-	for i:=0; i<numShards; i++ {
+	for i := 0; i < numShards; i++ {
 		kvs.shards[i] = &Shard{data: make(map[string]KeyValue)}
 	}
 
@@ -64,15 +64,15 @@ func NewKVService(numShards, numReplicas int) *KVService {
 }
 
 func fnvHash(data string) uint32 {
-	 const prime = 16777619
-	 hash := uint32(2166136261)
+	const prime = 16777619
+	hash := uint32(2166136261)
 
-	 for i := 0; i < len(data); i++ {
-	  hash ^= uint32(data[i])
-	  hash *= prime
-	 }
+	for i := 0; i < len(data); i++ {
+		hash ^= uint32(data[i])
+		hash *= prime
+	}
 
-	 return hash
+	return hash
 }
 
 func (kv *KVService) GetShardIndex(key string) int {
@@ -108,7 +108,6 @@ func (kv *KVService) Put(key, value string, ttl time.Duration) {
 	shard.data[key] = KeyValue{Value: value, Expiration: expiration}
 }
 
-
 // Accets a batch of requests for Put/Get operations. Returns responses for both operations
 func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Batch_Response) error {
 	kv.stats.puts += uint64(len(request.Data))
@@ -116,15 +115,14 @@ func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Bat
 	response.Values = make([]string, len(request.Data))
 
 	var i = 0
-	for key, value := range request.Data {
-		if value == "" {
-
-			if value, found := kv.Get(key); found {
+	for _, operation := range request.Data {
+		if operation.IsRead {
+			if value, found := kv.Get(operation.Key); found {
 				response.Values[i] = value
 			}
 
 		} else {
-			kv.Put(key, value, time.Duration(100 * float64(time.Millisecond)))
+			kv.Put(operation.Key, operation.Value, time.Duration(100*float64(time.Millisecond)))
 		}
 		i++
 	}
