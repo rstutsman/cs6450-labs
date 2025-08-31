@@ -44,9 +44,6 @@ func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call 
 	}
 	response := kvs.Batch_Response{}
 	call := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
-	if call.Error != nil {
-		log.Fatal(call.Error)
-	}
 
 	return call
 }
@@ -55,9 +52,10 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 	client := Dial(addr)
 
 	value := strings.Repeat("x", 128)
-	const batchSize = 1024
+	const batchSize = 2048
 
 	opsCompleted := uint64(0)
+	var calls []*rpc.Call
 
 	for !done.Load() {
 		// Create a batch of operations, consisting of both Gets and Puts
@@ -77,27 +75,24 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 		}
 
 		if asynch {
-			calls := make([]*rpc.Call, 0, batchSize)
 			if len(batchData) > 0 {
 				calls = append(calls, client.Send_Asynch_Batch(batchData))
 			}
 
-			// Wait for all asynchronous calls to complete.
-			// Similar to what we did in HW1.
-			// call.Done is a channel which signals when the call was finished
-			// Response data is stored in call.Reply (NEEDS SOME TESTING)
-			for _, call := range calls {
-				<-call.Done
-			}
 		} else {
 			// Send only 1 RPC call size of batchSize
 			if len(batchData) > 0 {
 				client.Send_Synch_Batch(batchData)
 			}
 		}
-
 	}
-
+	// Wait for all asynchronous calls to complete.
+	// Similar to what we did in HW1.
+	// call.Done is a channel which signals when the call was finished
+	// Response data is stored in call.Reply (NEEDS SOME TESTING)
+	for _, call := range calls {
+		<-call.Done
+	}
 	fmt.Printf("Client %d finished operations.\n", id)
 
 	resultsCh <- opsCompleted
@@ -123,7 +118,7 @@ func main() {
 	secs := flag.Int("secs", 30, "Duration in seconds for each client to run")
 
 	// Change this value to run asynchronously
-	asynch := flag.Bool("asynch", true, "Enable asynchronous RPC calls")
+	asynch := flag.Bool("asynch", false, "Enable asynchronous RPC calls")
 
 	flag.Parse()
 
