@@ -27,13 +27,13 @@ func Dial(addr string) *Client {
 	return &Client{rpcClient}
 }
 
-// Send a batch of keys to retrieve
-func (client *Client) BatchGet(keys []string) []string {
-	request := kvs.BatchGetRequest{
-		Keys: keys,
+// Sends a batch of RPC calls synchronously
+func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
+	request := kvs.Batch_Request{
+		Data: putData,
 	}
-	response := kvs.BatchGetResponse{}
-	err := client.rpcClient.Call("KVService.BatchGet", &request, &response)
+	response := kvs.Batch_Response{}
+	err := client.rpcClient.Call("KVService.Process_Batch", &request, &response)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,16 +41,18 @@ func (client *Client) BatchGet(keys []string) []string {
 	return response.Values
 }
 
-// Send a batch of key-value pairs to modify
-func (client *Client) BatchPut(putData map[string]string) {
-	request := kvs.BatchPutRequest{
+// Sends a batch of RPC calls asynchronously
+// The difference is in rpcClient.Call vs rpcClient.Go
+// .Go returns  a Call datastructure with a "Done" channel in it, which needs to be waited on
+// (see homework 1, as it is very similar)
+func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call {
+	request := kvs.Batch_Request{
 		Data: putData,
 	}
-	//response := kvs.BatchPutResponse{}
-	err := client.rpcClient.Call("KVService.BatchPut", &request, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	response := kvs.Batch_Response{}
+	call := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
+
+	return call
 }
 
 func hashKey(key string) uint32 {
@@ -59,63 +61,77 @@ func hashKey(key string) uint32 {
 	return h.Sum32()
 }
 
-func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload, numConnections int, resultsCh chan<- uint64) {
+func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workload *kvs.Workload, totalOpsCompleted *uint64) {
+	defer wg.Done()
+
+	// Dial all hosts
+	clients := make([]*Client, len(hosts))
+	for i, host := range hosts {
+		clients[i] = Dial(host)
+	}
+
+	value := strings.Repeat("x", 128)
+	const batchSize = 5000 //1024
+	clientOpsCompleted := uint64(0)
+
+	for !done.Load() {
+		// Create batches for each server
+		requests := make([]kvs.Batch_Request, len(hosts))
+		/*
+		getKeys := make([][]string, len(hosts)) // nil slices are fine for append
+		putData := make([]map[string]string, len(hosts))
+		*/
+
+		/*
+		// initialize batches
+		for i := range requests {
+			requests[i] = make(kvs.Batch_Request)
+		}
+		*/
+
+		// organize work from workload
+		for j := 0; j < batchSize; j++ {
+			// XXX: something may go awry here when the total number of "yields"
+			// from workload.Next() is not a clean multiple of batchSize.
+			op := workload.Next()
+			key := fmt.Sprintf("%d", op.Key)
+
+			// Hash key to determine which server
+			serverIndex := int(hashKey(key)) % len(hosts)
+			batchRequest := requests[serverIndex]
+			var batchOp kvs.BatchOperation
+
+			if op.IsRead {
+				batchOp.Key = key
+				batchOp.Value = ""
+				batchOp.IsRead = true
+			} else {
+				batchOp.Key = key
+				batchOp.Value = value
+				batchOp.IsRead = false
+			}
+			batchRequest.Data = append(batchRequest.Data, batchOp)
+			clientOpsCompleted++
+		}
+
+		// Send batches to each server
+		for i := 0; i < len(hosts); i++ {
+			batchRequestData := requests[i].Data
+			if len(batchRequestData) > 0 {
+				clients[i].Send_Synch_Batch(batchRequestData)
+			}
+		}
+	}
+	atomic.AddUint64(totalOpsCompleted, clientOpsCompleted) // TODO: only really accurate after at-least-once
+}
+
+func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload, numConnections int, resultsCh chan<- uint64, asynch bool) {
 	var wg sync.WaitGroup
 	totalOpsCompleted := uint64(0)
 
 	for connId := 0; connId < numConnections; connId++ {
 		wg.Add(1)
-		go func(connectionId int) {
-			defer wg.Done()
-
-			// Dial all hosts
-			clients := make([]*Client, len(hosts))
-			for i, host := range hosts {
-				clients[i] = Dial(host)
-			}
-
-			value := strings.Repeat("x", 128)
-			const batchSize = 5000 //1024
-			opsCompleted := uint64(0)
-
-			for !done.Load() {
-				// Create batches for each server
-				getKeys := make([][]string, len(hosts)) // nil slices are fine for append
-				putData := make([]map[string]string, len(hosts))
-
-				// Only initialize putData maps (getKeys slices don't need it)
-				for i := range putData {
-					putData[i] = make(map[string]string)
-				}
-
-				for j := 0; j < batchSize; j++ {
-					op := workload.Next()
-					key := fmt.Sprintf("%d", op.Key)
-
-					// Hash key to determine which server
-					serverIndex := int(hashKey(key)) % len(hosts)
-
-					if op.IsRead {
-						getKeys[serverIndex] = append(getKeys[serverIndex], key)
-					} else {
-						putData[serverIndex][key] = value
-					}
-					opsCompleted++
-				}
-
-				// Send batches to each server
-				for i := 0; i < len(hosts); i++ {
-					if len(getKeys[i]) > 0 {
-						clients[i].BatchGet(getKeys[i])
-					}
-					if len(putData[i]) > 0 {
-						clients[i].BatchPut(putData[i])
-					}
-				}
-			}
-
-			atomic.AddUint64(&totalOpsCompleted, opsCompleted)
-		}(connId)
+		go runConnection(wg, hosts, done, workload, &totalOpsCompleted)
 	}
 
 	wg.Wait()
@@ -142,6 +158,10 @@ func main() {
 	workload := flag.String("workload", "YCSB-B", "Workload type (YCSB-A, YCSB-B, YCSB-C)")
 	secs := flag.Int("secs", 30, "Duration in seconds for each client to run")
 	numConnections := flag.Int("connections", 1, "Number of connections per client")
+
+	// Change this value to run asynchronously
+	asynch := flag.Bool("asynch", false, "Enable asynchronous RPC calls")
+
 	flag.Parse()
 
 	if len(hosts) == 0 {
@@ -153,8 +173,9 @@ func main() {
 			"theta %.2f\n"+
 			"workload %s\n"+
 			"secs %d\n"+
-			"connections %d\n",
-		hosts, *theta, *workload, *secs, *numConnections,
+			"connections %d\n"+
+			"Asynch RPC %t\n",
+		hosts, *theta, *workload, *secs, *numConnections, *asynch,
 	)
 
 	start := time.Now()
@@ -165,7 +186,7 @@ func main() {
 	clientId := 0
 	go func(clientId int) {
 		workload := kvs.NewWorkload(*workload, *theta)
-		runClient(clientId, hosts, &done, workload, *numConnections, resultsCh)
+		runClient(clientId, hosts, &done, workload, *numConnections, resultsCh, *asynch)
 	}(clientId)
 
 	time.Sleep(time.Duration(*secs) * time.Second)

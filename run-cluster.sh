@@ -19,7 +19,7 @@ usage() {
     echo "  $0 2                                  # 2 servers, rest as clients"
     echo "  $0 2 3                               # 2 servers, 3 clients"
     echo "  $0 2 3 \"-port 8080\""
-    echo " $0 2 3 \"-port 8080\" \"-workload YCSB-A -secs 30\""
+    echo "  $0 2 3 \"-port 8080\" \"-workload YCSB-A -secs 30\""
     exit 1
 }
 

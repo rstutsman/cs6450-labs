@@ -1,17 +1,15 @@
 package kvs
 
-type BatchPutRequest struct {
-	Data map[string]string
+type Batch_Request struct {
+	Data []BatchOperation
 }
 
-type BatchPutResponse struct {
-}
-
-type BatchGetRequest struct {
-	Keys []string
-}
-
-type BatchGetResponse struct {
-	Keys   []string
+type Batch_Response struct {
 	Values []string
+}
+
+type BatchOperation struct {
+	Key    string
+	Value  string
+	IsRead bool
 }

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	// for profiling
-	"runtime/pprof"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"syscall"
 
 	"github.com/rstutsman/cs6450-labs/kvs"
@@ -33,17 +33,17 @@ func (s *Stats) Sub(prev *Stats) Stats {
 
 // sharding ---------------------------------
 type KeyValue struct {
-	Value		string
-	Expiration	time.Time	// simulates TTL
+	Value      string
+	Expiration time.Time // simulates TTL
 }
 type Shard struct {
 	data map[string]KeyValue
-	mu sync.RWMutex
+	mu   sync.RWMutex
 }
 
 type KVService struct {
 	sync.Mutex
-	shards	  []*Shard
+	shards    []*Shard
 	replicas  int
 	stats     Stats
 	prevStats Stats
@@ -55,7 +55,7 @@ func NewKVService(numShards, numReplicas int) *KVService {
 	kvs.shards = make([]*Shard, numShards)
 	kvs.replicas = numReplicas
 
-	for i:=0; i<numShards; i++ {
+	for i := 0; i < numShards; i++ {
 		kvs.shards[i] = &Shard{data: make(map[string]KeyValue)}
 	}
 
@@ -64,15 +64,15 @@ func NewKVService(numShards, numReplicas int) *KVService {
 }
 
 func fnvHash(data string) uint32 {
-	 const prime = 16777619
-	 hash := uint32(2166136261)
+	const prime = 16777619
+	hash := uint32(2166136261)
 
-	 for i := 0; i < len(data); i++ {
-	  hash ^= uint32(data[i])
-	  hash *= prime
-	 }
+	for i := 0; i < len(data); i++ {
+		hash ^= uint32(data[i])
+		hash *= prime
+	}
 
-	 return hash
+	return hash
 }
 
 func (kv *KVService) GetShardIndex(key string) int {
@@ -96,24 +96,6 @@ func (kv *KVService) Get(key string) (string, bool) {
 	return item.Value, true
 }
 
-// Instead of looking up a key, look up the batch of keys
-// and return an array of corresponding values
-func (kv *KVService) BatchGet(request *kvs.BatchGetRequest, response *kvs.BatchGetResponse) error {
-	// XXX: potential case where several entries in a batch share the same shard
-	kv.stats.gets += uint64(len(request.Keys))
-
-	// Ensure that the response array is initialized
-	response.Values = make([]string, len(request.Keys))
-
-	for i, key := range request.Keys {
-		if value, found := kv.Get(key); found {
-			response.Values[i] = value
-		}
-	}
-
-	return nil
-}
-
 // single putter method
 // not I/O bound, just a helper per request
 func (kv *KVService) Put(key, value string, ttl time.Duration) {
@@ -126,14 +108,25 @@ func (kv *KVService) Put(key, value string, ttl time.Duration) {
 	shard.data[key] = KeyValue{Value: value, Expiration: expiration}
 }
 
-// Instead of placing a single value,
-// place a batch
-func (kv *KVService) BatchPut(request *kvs.BatchPutRequest, response *kvs.BatchPutResponse) error {
+// Accets a batch of requests for Put/Get operations. Returns responses for both operations
+func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Batch_Response) error {
 	kv.stats.puts += uint64(len(request.Data))
 
-	for key, value := range request.Data {
-		kv.Put(key, value, time.Duration(100 * float64(time.Millisecond)))
+	response.Values = make([]string, len(request.Data))
+
+	var i = 0
+	for _, operation := range request.Data {
+		if operation.IsRead {
+			if value, found := kv.Get(operation.Key); found {
+				response.Values[i] = value
+			}
+
+		} else {
+			kv.Put(operation.Key, operation.Value, time.Duration(100*float64(time.Millisecond)))
+		}
+		i++
 	}
+
 	return nil
 }
 
