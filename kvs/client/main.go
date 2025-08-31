@@ -25,6 +25,7 @@ func Dial(addr string) *Client {
 	return &Client{rpcClient}
 }
 
+// Sends a batch of RPC calls synchronously
 func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
 	request := kvs.Batch_Request{
 		Data: putData,
@@ -38,6 +39,10 @@ func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
 	return response.Values
 }
 
+// Sends a batch of RPC calls asynchronously
+// The difference is in rpcClient.Call vs rpcClient.Go
+// .Go returns  a Call datastructure with a "Done" channel in it, which needs to be waited on
+// (see homework 1, as it is very similar)
 func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call {
 	request := kvs.Batch_Request{
 		Data: putData,
@@ -74,6 +79,7 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 			opsCompleted++
 		}
 
+		// Synchronous or Asynchronous RPC supported
 		if asynch {
 			if len(batchData) > 0 {
 				calls = append(calls, client.Send_Asynch_Batch(batchData))
@@ -86,13 +92,17 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 			}
 		}
 	}
+
 	// Wait for all asynchronous calls to complete.
 	// Similar to what we did in HW1.
 	// call.Done is a channel which signals when the call was finished
-	// Response data is stored in call.Reply (NEEDS SOME TESTING)
-	for _, call := range calls {
-		<-call.Done
+	// Response data is stored in call.Reply 
+	if asynch {
+		for _, call := range calls {
+			<-call.Done
+		}
 	}
+
 	fmt.Printf("Client %d finished operations.\n", id)
 
 	resultsCh <- opsCompleted
