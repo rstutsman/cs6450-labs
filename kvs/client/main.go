@@ -77,7 +77,7 @@ func runClient(id int, addr string, done *atomic.Bool, workload *kvs.Workload, r
 		}
 
 		if asynch {
-			var calls []*rpc.Call
+			calls := make([]*rpc.Call, 0, batchSize)
 			if len(batchData) > 0 {
 				calls = append(calls, client.Send_Asynch_Batch(batchData))
 			}
