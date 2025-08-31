@@ -50,6 +50,7 @@ func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call 
 		Data: putData,
 	}
 	response := kvs.Batch_Response{}
+
 	call := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
 
 	return call
@@ -61,7 +62,7 @@ func hashKey(key string) uint32 {
 	return h.Sum32()
 }
 
-func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workload *kvs.Workload, totalOpsCompleted *uint64) {
+func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workload *kvs.Workload, totalOpsCompleted *uint64, asynch bool) {
 	defer wg.Done()
 
 	// Dial all hosts
@@ -76,18 +77,7 @@ func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workloa
 
 	for !done.Load() {
 		// Create batches for each server
-		requests := make([]kvs.Batch_Request, len(hosts))
-		/*
-		getKeys := make([][]string, len(hosts)) // nil slices are fine for append
-		putData := make([]map[string]string, len(hosts))
-		*/
-
-		/*
-		// initialize batches
-		for i := range requests {
-			requests[i] = make(kvs.Batch_Request)
-		}
-		*/
+		requests := make([][]kvs.BatchOperation, len(hosts))
 
 		// organize work from workload
 		for j := 0; j < batchSize; j++ {
@@ -98,7 +88,7 @@ func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workloa
 
 			// Hash key to determine which server
 			serverIndex := int(hashKey(key)) % len(hosts)
-			batchRequest := requests[serverIndex]
+			batchRequestData := requests[serverIndex]
 			var batchOp kvs.BatchOperation
 
 			if op.IsRead {
@@ -110,15 +100,20 @@ func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workloa
 				batchOp.Value = value
 				batchOp.IsRead = false
 			}
-			batchRequest.Data = append(batchRequest.Data, batchOp)
+			batchRequestData = append(batchRequestData, batchOp)
+			requests[serverIndex] = batchRequestData
 			clientOpsCompleted++
 		}
 
 		// Send batches to each server
 		for i := 0; i < len(hosts); i++ {
-			batchRequestData := requests[i].Data
+			batchRequestData := requests[i]
 			if len(batchRequestData) > 0 {
-				clients[i].Send_Synch_Batch(batchRequestData)
+				if asynch {
+					clients[i].Send_Asynch_Batch(batchRequestData)
+				} else {
+					clients[i].Send_Synch_Batch(batchRequestData)
+				}
 			}
 		}
 	}
@@ -129,11 +124,15 @@ func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload
 	var wg sync.WaitGroup
 	totalOpsCompleted := uint64(0)
 
+	// instantiate waitgroup before goroutines
 	for connId := 0; connId < numConnections; connId++ {
 		wg.Add(1)
-		go runConnection(wg, hosts, done, workload, &totalOpsCompleted)
+	}
+	for connId := 0; connId < numConnections; connId++ {
+		go runConnection(wg, hosts, done, workload, &totalOpsCompleted, asynch)
 	}
 
+	fmt.Println("waiting for connections to finish")
 	wg.Wait()
 	fmt.Printf("Client %d finished operations.\n", id)
 	resultsCh <- totalOpsCompleted
