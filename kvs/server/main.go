@@ -41,6 +41,11 @@ type Shard struct {
 	mu   sync.RWMutex
 }
 
+type RequestCache struct {
+	response  *kvs.Batch_Response
+	timestamp time.Time
+}
+
 type KVService struct {
 	sync.Mutex
 	shards    []*Shard
@@ -48,12 +53,15 @@ type KVService struct {
 	stats     Stats
 	prevStats Stats
 	lastPrint time.Time
+	reqCache  map[int64]*RequestCache
+	cacheMtx  sync.RWMutex
 }
 
 func NewKVService(numShards, numReplicas int) *KVService {
 	kvs := &KVService{}
 	kvs.shards = make([]*Shard, numShards)
 	kvs.replicas = numReplicas
+	kvs.reqCache = make(map[int64]*RequestCache)
 
 	for i := 0; i < numShards; i++ {
 		kvs.shards[i] = &Shard{data: make(map[string]KeyValue)}
@@ -108,8 +116,20 @@ func (kv *KVService) Put(key, value string, ttl time.Duration) {
 	shard.data[key] = KeyValue{Value: value, Expiration: expiration}
 }
 
-// Accets a batch of requests for Put/Get operations. Returns responses for both operations
+// Accepts a batch of requests for Put/Get operations. Returns responses for both operations
 func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Batch_Response) error {
+	// Check this request ID in the cache
+	if request.RequestID != 0 {
+		kv.cacheMtx.RLock()
+		cachedResponse, exists := kv.reqCache[request.RequestID]
+		kv.cacheMtx.RUnlock()
+
+		if exists {
+			*response = *cachedResponse.response
+			return nil
+		}
+	}
+
 	kv.stats.puts += uint64(len(request.Data))
 
 	response.Values = make([]string, len(request.Data))
@@ -125,6 +145,17 @@ func (kv *KVService) Process_Batch(request *kvs.Batch_Request, response *kvs.Bat
 			kv.Put(operation.Key, operation.Value, time.Duration(100*float64(time.Millisecond)))
 		}
 		i++
+	}
+
+	// Cache the response
+	if request.RequestID != 0 {
+		kv.cacheMtx.Lock()
+		kv.reqCache[request.RequestID] = &RequestCache{
+			response:  &kvs.Batch_Response{Values: make([]string, len(response.Values))},
+			timestamp: time.Now(),
+		}
+		copy(kv.reqCache[request.RequestID].response.Values, response.Values)
+		kv.cacheMtx.Unlock()
 	}
 
 	return nil

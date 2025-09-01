@@ -1,7 +1,8 @@
 package kvs
 
 type Batch_Request struct {
-	Data []BatchOperation
+	RequestID int64
+	Data      []BatchOperation
 }
 
 type Batch_Response struct {
