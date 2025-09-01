@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"hash/fnv"
@@ -27,33 +29,91 @@ func Dial(addr string) *Client {
 	return &Client{rpcClient}
 }
 
-// Sends a batch of RPC calls synchronously
-func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
-	request := kvs.Batch_Request{
-		Data: putData,
-	}
-	response := kvs.Batch_Response{}
-	err := client.rpcClient.Call("KVService.Process_Batch", &request, &response)
+func generateRequestID() int64 {
+	var bytes [8]byte
+	_, err := rand.Read(bytes[:])
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to generate random request ID:", err)
 	}
-
-	return response.Values
+	return int64(binary.LittleEndian.Uint64(bytes[:]))
 }
 
-// Sends a batch of RPC calls asynchronously
-// The difference is in rpcClient.Call vs rpcClient.Go
-// .Go returns  a Call datastructure with a "Done" channel in it, which needs to be waited on
-// (see homework 1, as it is very similar)
-func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call {
+// Sends a batch of RPC calls synchronously with retry logic
+func (client *Client) Send_Synch_Batch(putData []kvs.BatchOperation) []string {
+	requestID := generateRequestID()
 	request := kvs.Batch_Request{
-		Data: putData,
+		RequestID: requestID,
+		Data:      putData,
+	}
+
+	const maxRetries = 3
+	const baseDelay = 100 * time.Millisecond
+
+	for attempt := range maxRetries {
+		response := kvs.Batch_Response{}
+		err := client.rpcClient.Call("KVService.Process_Batch", &request, &response)
+		if err == nil {
+			return response.Values
+		}
+
+		// Log retry attempt
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<attempt) // delay *= 2
+			log.Printf("RPC call failed (attempt %d/%d): %v, retrying in %v", attempt+1, maxRetries, err, delay)
+			time.Sleep(delay)
+		} else {
+			log.Fatal("RPC call failed after all retries:", err)
+		}
+	}
+
+	return nil // unreachable
+}
+
+// Sends a batch of RPC calls asynchronously with retry logic
+// Returns a channel that will receive the final result after all retries
+func (client *Client) Send_Asynch_Batch(putData []kvs.BatchOperation) *rpc.Call {
+	requestID := generateRequestID()
+	request := kvs.Batch_Request{
+		RequestID: requestID,
+		Data:      putData,
 	}
 	response := kvs.Batch_Response{}
 
-	call := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
+	// Create a synthetic Call to return immediately
+	resultCall := &rpc.Call{
+		Done: make(chan *rpc.Call, 1),
+	}
 
-	return call
+	go func() {
+		const maxRetries = 3
+		const baseDelay = 100 * time.Millisecond
+
+		var lastErr error
+		for attempt := range maxRetries {
+			asyncCall := client.rpcClient.Go("KVService.Process_Batch", &request, &response, nil)
+			<-asyncCall.Done
+
+			if asyncCall.Error == nil {
+				resultCall.Reply = asyncCall.Reply
+				resultCall.Error = nil
+				resultCall.Done <- resultCall
+				return
+			}
+
+			lastErr = asyncCall.Error
+			if attempt < maxRetries-1 {
+				delay := baseDelay * time.Duration(1<<attempt)
+				log.Printf("Async RPC call failed (attempt %d/%d): %v, retrying in %v", attempt+1, maxRetries, asyncCall.Error, delay)
+				time.Sleep(delay)
+			}
+		}
+
+		// All retries failed
+		resultCall.Error = lastErr
+		resultCall.Done <- resultCall
+	}()
+
+	return resultCall
 }
 
 func hashKey(key string) uint32 {
