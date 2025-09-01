@@ -62,7 +62,7 @@ func hashKey(key string) uint32 {
 	return h.Sum32()
 }
 
-func runConnection(wg sync.WaitGroup, hosts []string, done *atomic.Bool, workload *kvs.Workload, totalOpsCompleted *uint64, asynch bool) {
+func runConnection(wg *sync.WaitGroup, hosts []string, done *atomic.Bool, workload *kvs.Workload, totalOpsCompleted *uint64, asynch bool) {
 	defer wg.Done()
 
 	// Dial all hosts
@@ -129,7 +129,7 @@ func runClient(id int, hosts []string, done *atomic.Bool, workload *kvs.Workload
 		wg.Add(1)
 	}
 	for connId := 0; connId < numConnections; connId++ {
-		go runConnection(wg, hosts, done, workload, &totalOpsCompleted, asynch)
+		go runConnection(&wg, hosts, done, workload, &totalOpsCompleted, asynch)
 	}
 
 	fmt.Println("waiting for connections to finish")
